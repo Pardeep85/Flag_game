@@ -9,24 +9,9 @@ app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 8080;
-
 const STATE_FILE = path.join(__dirname, "gameState.json");
 
 /* ================= FILE HELPERS ================= */
-
-function loadState() {
-    if (!fs.existsSync(STATE_FILE)) {
-        const initial = createDefaultState();
-        fs.writeFileSync(STATE_FILE, JSON.stringify(initial, null, 2));
-        return initial;
-    }
-
-    return JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
-}
-
-function saveState(state) {
-    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
-}
 
 function createDefaultState() {
     return {
@@ -289,23 +274,72 @@ function createDefaultState() {
             "ZM",
             "ZW"
         ],
-        enablingModeschaos: false,
-        enablingModessuddenDeath: true,
+
         volume: 0.7,
 
-
-        // chaos: {
-        //     active: false,
-        //     direction: "leftToRight",
-        //     startTime: null,
-        //     speed: 2
-        // },
+        chaosEvent: {
+            triggeredAt: 0,
+            enabled: false
+        },
 
         updatedAt: Date.now()
     };
 }
+// function createDefaultState() {
+//     return {
+//         flagCount: 20,
+//         netSize: 200,
+//         fireTarget: null,
+//         heartTarget: null,
+//         selectedCountries: [],
+//         volume: 0.7,
+
+//         chaosEvent: {
+//             triggeredAt: 0,
+//             enabled: false
+//         },
+
+//         updatedAt: Date.now()
+//     };
+// }
+
+function loadState() {
+    if (!fs.existsSync(STATE_FILE)) {
+        const initial = createDefaultState();
+        fs.writeFileSync(STATE_FILE, JSON.stringify(initial, null, 2));
+        return initial;
+    }
+
+    return JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+}
+
+function saveState(state) {
+    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+}
 
 /* ================= VALIDATION ================= */
+
+// function validatePayload(p) {
+//     if (p.flagCount !== undefined) {
+//         if (typeof p.flagCount !== "number" || p.flagCount < 5 || p.flagCount > 100)
+//             return "flagCount invalid";
+//     }
+
+//     if (p.netSize !== undefined) {
+//         if (typeof p.netSize !== "number" || p.netSize < 100 || p.netSize > 300)
+//             return "netSize invalid";
+//     }
+
+//     if (
+//         p.fireTarget !== undefined &&
+//         p.heartTarget !== undefined &&
+//         p.fireTarget === p.heartTarget
+//     ) {
+//         return "fireTarget and heartTarget cannot match";
+//     }
+
+//     return null;
+// }
 
 function validatePayload(p) {
 
@@ -317,6 +351,7 @@ function validatePayload(p) {
 
     if (p.fireTarget && p.fireTarget === p.heartTarget)
         return "fireTarget and heartTarget cannot match";
+
 
     if (p.chaos) {
         if (typeof p.chaos.active !== "boolean")
@@ -331,15 +366,14 @@ function validatePayload(p) {
 
 /* ================= ROUTES ================= */
 
+// Get full game state
 app.get("/game/state", (req, res) => {
-    console.log("get called")
     const state = loadState();
-
     res.json(state);
 });
 
+// Update normal settings (NOT chaos)
 app.post("/game/state", (req, res) => {
-
     const incoming = req.body;
 
     const error = validatePayload(incoming);
@@ -352,17 +386,52 @@ app.post("/game/state", (req, res) => {
     const updated = {
         ...current,
         ...incoming,
-        chaos: {
-            ...current.chaos,
-            ...(incoming.chaos || {})
+        updatedAt: Date.now()
+    };
+
+    saveState(updated);
+
+    res.json({ success: true, state: updated });
+});
+
+// 🔥 Chaos button trigger endpoint
+app.post("/game/chaos", (req, res) => {
+    const current = loadState();
+
+    const updated = {
+        ...current,
+        chaosEvent: {
+            triggeredAt: Date.now(),
+            enabled: true
         },
         updatedAt: Date.now()
     };
 
-    console.log(updated)
     saveState(updated);
 
-    res.json({ success: true, state: updated });
+    res.json({ success: true });
+});
+
+app.post("/game/chaos/reset", (req, res) => {
+    const current = loadState();
+
+    const updated = {
+        ...current,
+        chaosEvent: {
+            triggeredAt: 0,
+            enabled: false
+        },
+        updatedAt: Date.now()
+    };
+
+    saveState(updated);
+
+    res.json({ success: true });
+});
+
+app.get("/game/chaos", (req, res) => {
+    const state = loadState();
+    res.json(state.chaosEvent);
 });
 
 /* ================= START ================= */
