@@ -68,18 +68,29 @@ async function pollYouTubeChat(liveChatId) {
         const protectedSet = new Set(state.protectedFlags || []);
         let changed = false;
 
+        const supporters = state.supporters || {};
+
         for (const item of data.items || []) {
             const text = item.snippet?.displayMessage || "";
+            const author = item.snippet?.authorChannelId || "anonymous";
+            const displayName = item.snippet?.displayName || author;
             const code = parseMessageForCountry(text);
-            if (code && state.selectedCountries.includes(code) && !protectedSet.has(code)) {
-                protectedSet.add(code);
-                changed = true;
-                console.log(`[Chat] Protected flag: ${code}  (from: "${text}")`);
+            if (code && state.selectedCountries.includes(code)) {
+                if (!protectedSet.has(code)) {
+                    protectedSet.add(code);
+                    changed = true;
+                    console.log(`[Chat] Protected flag: ${code}  (from: "${text}")`);
+                }
+                if (!supporters[code]) supporters[code] = [];
+                if (!supporters[code].some(s => s.id === author)) {
+                    supporters[code].push({ id: author, name: displayName, time: Date.now() });
+                    changed = true;
+                }
             }
         }
 
         if (changed) {
-            saveState({ ...state, protectedFlags: [...protectedSet], updatedAt: Date.now() });
+            saveState({ ...state, protectedFlags: [...protectedSet], supporters, updatedAt: Date.now() });
         }
 
         const interval = data.pollingIntervalMillis || 5000;
@@ -618,7 +629,7 @@ app.post("/game/protected/clear", (_req, res) => {
 
 // Simulate a chat message (for testing without a real YouTube stream)
 app.post("/game/chat/test", (req, res) => {
-    const { message } = req.body;
+    const { message, username } = req.body;
     if (!message || typeof message !== "string") return res.status(400).json({ error: "message required" });
 
     const code = parseMessageForCountry(message);
@@ -632,9 +643,32 @@ app.post("/game/chat/test", (req, res) => {
     const protectedSet = new Set(state.protectedFlags || []);
     const alreadyProtected = protectedSet.has(code);
     protectedSet.add(code);
-    saveState({ ...state, protectedFlags: [...protectedSet], updatedAt: Date.now() });
 
-    res.json({ matched: true, code, protected: true, alreadyProtected, message });
+    const supporters = state.supporters || {};
+    if (!supporters[code]) supporters[code] = [];
+    const user = username || `TestUser_${Date.now()}`;
+    if (!supporters[code].some(s => s.name === user)) {
+        supporters[code].push({ id: user, name: user, time: Date.now() });
+    }
+
+    saveState({ ...state, protectedFlags: [...protectedSet], supporters, updatedAt: Date.now() });
+
+    res.json({ matched: true, code, protected: true, alreadyProtected, message, supporter: user });
+});
+
+// Get supporters for a specific flag
+app.get("/game/supporters/:code", (req, res) => {
+    const state = loadState();
+    const code = req.params.code.toUpperCase();
+    const supporters = state.supporters || {};
+    res.json(supporters[code] || []);
+});
+
+// Clear all supporters (called on new round)
+app.post("/game/supporters/clear", (_req, res) => {
+    const state = loadState();
+    saveState({ ...state, supporters: {}, updatedAt: Date.now() });
+    res.json({ success: true });
 });
 
 /* ================= START ================= */
