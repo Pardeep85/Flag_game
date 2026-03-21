@@ -3,6 +3,156 @@ const fs = require("fs");
 const path = require("path");
 const cors = require("cors");
 require("dotenv").config();
+const { google } = require("googleapis");
+const COUNTRY_NAME_TO_CODE = require("./countryMap");
+
+const youtube = google.youtube({ version: "v3", auth: process.env.YOUTUBE_API_KEY });
+
+/* ================= FLAG / COUNTRY PARSING ================= */
+
+// Converts a flag emoji (two regional indicator symbols) → ISO code, e.g. 🇧🇷 → "BR"
+function flagEmojiToCode(emoji) {
+    const chars = [...emoji];
+    if (chars.length < 2) return null;
+    const code = chars.slice(0, 2).map(c => {
+        const cp = c.codePointAt(0);
+        if (cp >= 0x1F1E6 && cp <= 0x1F1FF) return String.fromCharCode(cp - 0x1F1E6 + 65);
+        return null;
+    });
+    if (code.includes(null)) return null;
+    return code.join("");
+}
+
+// Returns the first country code found in a chat message, or null
+function parseMessageForCountry(text) {
+    // 1. Check for flag emojis first
+    const flagMatches = text.match(/[\u{1F1E6}-\u{1F1FF}]{2}/gu) || [];
+    for (const emoji of flagMatches) {
+        const code = flagEmojiToCode(emoji);
+        if (code) return code;
+    }
+
+    // 2. Check for exact country name match (case-insensitive)
+    const lower = text.toLowerCase().trim();
+    if (COUNTRY_NAME_TO_CODE[lower]) return COUNTRY_NAME_TO_CODE[lower];
+
+    // 3. Check if message contains a known country name as a whole word
+    for (const [name, code] of Object.entries(COUNTRY_NAME_TO_CODE)) {
+        const regex = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
+        if (regex.test(lower)) return code;
+    }
+
+    return null;
+}
+
+/* ================= YOUTUBE LIVE CHAT POLLING ================= */
+
+let chatPollTimer = null;
+let watchTimer = null;
+let chatNextPageToken = null;
+
+const WATCH_INTERVAL_MS = 60 * 1000; // check for live stream every 60s when idle
+
+// Polls chat messages and reschedules itself. If the stream ends, falls back to watching.
+async function pollYouTubeChat(liveChatId) {
+    try {
+        const params = { liveChatId, part: "snippet", maxResults: 200 };
+        if (chatNextPageToken) params.pageToken = chatNextPageToken;
+
+        const response = await youtube.liveChatMessages.list(params);
+        const data = response.data;
+
+        chatNextPageToken = data.nextPageToken;
+
+        const state = loadState();
+        const protectedSet = new Set(state.protectedFlags || []);
+        let changed = false;
+
+        for (const item of data.items || []) {
+            const text = item.snippet?.displayMessage || "";
+            const code = parseMessageForCountry(text);
+            if (code && state.selectedCountries.includes(code) && !protectedSet.has(code)) {
+                protectedSet.add(code);
+                changed = true;
+                console.log(`[Chat] Protected flag: ${code}  (from: "${text}")`);
+            }
+        }
+
+        if (changed) {
+            saveState({ ...state, protectedFlags: [...protectedSet], updatedAt: Date.now() });
+        }
+
+        const interval = data.pollingIntervalMillis || 5000;
+        chatPollTimer = setTimeout(() => pollYouTubeChat(liveChatId), interval);
+    } catch (err) {
+        // Stream likely ended — go back to watching for a new live stream
+        console.log("[Chat] Stream ended or chat unavailable:", err.message);
+        console.log("[Chat] Watching for next live stream...");
+        chatNextPageToken = null;
+        watchTimer = setTimeout(watchForLiveStream, WATCH_INTERVAL_MS);
+    }
+}
+
+// Checks if the channel is currently live. If yes, starts chat polling. If not, checks again later.
+async function watchForLiveStream() {
+    try {
+        const res = await youtube.search.list({
+            part: "snippet",
+            channelId: process.env.YOUTUBE_CHANNEL_ID,
+            eventType: "live",
+            type: "video",
+            maxResults: 1
+        });
+
+        const liveVideo = res.data.items?.[0];
+
+        if (!liveVideo) {
+            console.log("[Chat] No active stream found. Checking again in 60s...");
+            watchTimer = setTimeout(watchForLiveStream, WATCH_INTERVAL_MS);
+            return;
+        }
+
+        const videoId = liveVideo.id.videoId;
+        console.log(`[Chat] Live stream detected! Video ID: ${videoId}`);
+
+        // Fetch the live chat ID from the video
+        const videoRes = await youtube.videos.list({
+            part: "liveStreamingDetails",
+            id: videoId
+        });
+
+        const liveChatId = videoRes.data.items?.[0]?.liveStreamingDetails?.activeLiveChatId;
+
+        if (!liveChatId) {
+            console.log("[Chat] Could not get live chat ID. Retrying in 60s...");
+            watchTimer = setTimeout(watchForLiveStream, WATCH_INTERVAL_MS);
+            return;
+        }
+
+        console.log(`[Chat] Connected to live chat: ${liveChatId}. Polling started.`);
+        chatNextPageToken = null;
+        pollYouTubeChat(liveChatId);
+    } catch (err) {
+        console.error("[Chat] Error while watching for live stream:", err.message);
+        watchTimer = setTimeout(watchForLiveStream, WATCH_INTERVAL_MS);
+    }
+}
+
+// Entry point — called once on server start
+function startYouTubeChatPolling() {
+    if (!process.env.YOUTUBE_API_KEY) {
+        console.log("[Chat] YOUTUBE_API_KEY not set — skipping.");
+        return;
+    }
+
+    if (!process.env.YOUTUBE_CHANNEL_ID) {
+        console.log("[Chat] YOUTUBE_CHANNEL_ID not set — skipping.");
+        return;
+    }
+
+    console.log("[Chat] Watching channel for live streams:", process.env.YOUTUBE_CHANNEL_ID);
+    watchForLiveStream();
+}
 
 const app = express();
 app.use(cors());
@@ -282,6 +432,8 @@ function createDefaultState() {
             enabled: false
         },
 
+        protectedFlags: [],
+
         updatedAt: Date.now()
     };
 }
@@ -426,7 +578,7 @@ app.post("/game/chaos/reset", (req, res) => {
 
     saveState(updated);
 
-    res.json({ success: true });
+    res.json({ success: true, message: updated });
 });
 
 app.get("/game/chaos", (req, res) => {
@@ -434,8 +586,60 @@ app.get("/game/chaos", (req, res) => {
     res.json(state.chaosEvent);
 });
 
+/* ================= PROTECTED FLAGS ROUTES ================= */
+
+// Get currently protected flags
+app.get("/game/protected", (_req, res) => {
+    const state = loadState();
+    res.json({ protectedFlags: state.protectedFlags || [] });
+});
+
+// Manually protect a flag (by country code)
+app.post("/game/protected", (req, res) => {
+    const { code } = req.body;
+    if (!code || typeof code !== "string") return res.status(400).json({ error: "code required" });
+
+    const state = loadState();
+    const upper = code.toUpperCase();
+    if (!state.selectedCountries.includes(upper)) return res.status(400).json({ error: "country not in game" });
+
+    const protectedSet = new Set(state.protectedFlags || []);
+    protectedSet.add(upper);
+    saveState({ ...state, protectedFlags: [...protectedSet], updatedAt: Date.now() });
+    res.json({ success: true, protectedFlags: [...protectedSet] });
+});
+
+// Clear all protected flags
+app.post("/game/protected/clear", (_req, res) => {
+    const state = loadState();
+    saveState({ ...state, protectedFlags: [], updatedAt: Date.now() });
+    res.json({ success: true });
+});
+
+// Simulate a chat message (for testing without a real YouTube stream)
+app.post("/game/chat/test", (req, res) => {
+    const { message } = req.body;
+    if (!message || typeof message !== "string") return res.status(400).json({ error: "message required" });
+
+    const code = parseMessageForCountry(message);
+    if (!code) return res.json({ matched: false, message });
+
+    const state = loadState();
+    if (!state.selectedCountries.includes(code)) {
+        return res.json({ matched: true, code, protected: false, reason: "country not in current game" });
+    }
+
+    const protectedSet = new Set(state.protectedFlags || []);
+    const alreadyProtected = protectedSet.has(code);
+    protectedSet.add(code);
+    saveState({ ...state, protectedFlags: [...protectedSet], updatedAt: Date.now() });
+
+    res.json({ matched: true, code, protected: true, alreadyProtected, message });
+});
+
 /* ================= START ================= */
 
 app.listen(PORT, () => {
     console.log(`Backend running on ${PORT}`);
+    startYouTubeChatPolling();
 });
