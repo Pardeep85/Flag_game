@@ -51,12 +51,15 @@ let chatPollTimer = null;
 let watchTimer = null;
 let chatNextPageToken = null;
 
-const WATCH_INTERVAL_MS = 60 * 1000; // check for live stream every 60s when idle
+const WATCH_INTERVAL_MS = 5 * 60 * 1000; // check for live stream every 10 min when idle
 
 // Polls chat messages and reschedules itself. If the stream ends, falls back to watching.
 async function pollYouTubeChat(liveChatId) {
     try {
-        const params = { liveChatId, part: "snippet", maxResults: 200 };
+
+        console.log("pollYouTubeChat");
+
+        const params = { liveChatId, part: "snippet,authorDetails", maxResults: 200 };
         if (chatNextPageToken) params.pageToken = chatNextPageToken;
 
         const response = await youtube.liveChatMessages.list(params);
@@ -65,38 +68,84 @@ async function pollYouTubeChat(liveChatId) {
         chatNextPageToken = data.nextPageToken;
 
         const state = loadState();
+
         const protectedSet = new Set(state.protectedFlags || []);
         let changed = false;
 
         const supporters = state.supporters || {};
 
         for (const item of data.items || []) {
+
+            if (item.snippet?.type !== "textMessageEvent") continue;
+
             const text = item.snippet?.displayMessage || "";
-            const author = item.snippet?.authorChannelId || "anonymous";
-            const displayName = item.snippet?.displayName || author;
+            const author = item.authorDetails?.channelId || "anonymous";
+            const displayName = item.authorDetails?.displayName || "Unknown";
             const code = parseMessageForCountry(text);
-            if (code && state.selectedCountries.includes(code)) {
-                if (!protectedSet.has(code)) {
-                    protectedSet.add(code);
-                    changed = true;
-                    console.log(`[Chat] Protected flag: ${code}  (from: "${text}")`);
-                }
-                if (!supporters[code]) supporters[code] = [];
-                if (!supporters[code].some(s => s.id === author)) {
-                    supporters[code].push({ id: author, name: displayName, time: Date.now() });
+
+            if (state.selectedCountries.includes(code)) {
+                console.log("---- CHAT DEBUG ----");
+                console.log("Message:", item);
+                // console.log("Parsed Code:", code);
+                // console.log("In selectedCountries:", code ? state.selectedCountries.includes(code) : false);
+                // console.log("Already protected:", code ? protectedSet.has(code) : false);
+                console.log("--------------------");
+            }
+
+            if (!code || !state.selectedCountries.includes(code)) continue;
+
+            // 🟢 CASE 1: no flag protected yet
+            if (protectedSet.size === 0) {
+
+                protectedSet.add(code);
+
+                supporters[code] = [{
+                    id: author,
+                    name: displayName,
+                    time: Date.now()
+                }];
+
+                console.log("FIRST PROTECT:", code, "by", displayName);
+                changed = true;
+                continue;
+            }
+
+            // 🔵 CASE 2: only support already protected flag
+            const currentFlag = [...protectedSet][0];
+
+            if (code === currentFlag) {
+
+                if (!supporters[currentFlag]) supporters[currentFlag] = [];
+
+                if (!supporters[currentFlag].some(s => s.id === author)) {
+                    supporters[currentFlag].push({
+                        id: author,
+                        name: displayName,
+                        time: Date.now()
+                    });
+
+                    console.log("SUPPORT:", displayName, "→", currentFlag);
                     changed = true;
                 }
             }
+
+            // ❌ ignore other flags completely
         }
 
         if (changed) {
-            saveState({ ...state, protectedFlags: [...protectedSet], supporters, updatedAt: Date.now() });
+            saveState({
+                ...state,
+                protectedFlags: [...protectedSet], // only 1 element
+                supporters,
+                updatedAt: Date.now()
+            });
         }
 
         const interval = data.pollingIntervalMillis || 5000;
+
         chatPollTimer = setTimeout(() => pollYouTubeChat(liveChatId), interval);
+
     } catch (err) {
-        // Stream likely ended — go back to watching for a new live stream
         console.log("[Chat] Stream ended or chat unavailable:", err.message);
         console.log("[Chat] Watching for next live stream...");
         chatNextPageToken = null;
