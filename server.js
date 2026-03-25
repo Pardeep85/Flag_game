@@ -74,62 +74,99 @@ async function pollYouTubeChat(liveChatId) {
 
         const supporters = state.supporters || {};
 
+        // for (const item of data.items || []) {
+
+        //     if (item.snippet?.type !== "textMessageEvent") continue;
+
+        //     const text = item.snippet?.displayMessage || "";
+        //     const author = item.authorDetails?.channelId || "anonymous";
+        //     const displayName = item.authorDetails?.displayName || "Unknown";
+        //     const code = parseMessageForCountry(text);
+
+        //     if (state.selectedCountries.includes(code)) {
+        //         console.log("---- CHAT DEBUG ----");
+        //         console.log("Message:", item);
+        //         // console.log("Parsed Code:", code);
+        //         // console.log("In selectedCountries:", code ? state.selectedCountries.includes(code) : false);
+        //         // console.log("Already protected:", code ? protectedSet.has(code) : false);
+        //         console.log("--------------------");
+        //     }
+
+        //     if (!code || !state.selectedCountries.includes(code)) continue;
+
+        //     // 🟢 CASE 1: no flag protected yet
+        //     if (protectedSet.size === 0) {
+
+        //         protectedSet.add(code);
+
+        //         supporters[code] = [{
+        //             id: author,
+        //             name: displayName,
+        //             time: Date.now()
+        //         }];
+
+        //         console.log("FIRST PROTECT:", code, "by", displayName);
+        //         changed = true;
+        //         continue;
+        //     }
+
+        //     // 🔵 CASE 2: only support already protected flag
+        //     const currentFlag = [...protectedSet][0];
+
+        //     if (code === currentFlag) {
+
+        //         if (!supporters[currentFlag]) supporters[currentFlag] = [];
+
+        //         if (!supporters[currentFlag].some(s => s.id === author)) {
+        //             supporters[currentFlag].push({
+        //                 id: author,
+        //                 name: displayName,
+        //                 time: Date.now()
+        //             });
+
+        //             console.log("SUPPORT:", displayName, "→", currentFlag);
+        //             changed = true;
+        //         }
+        //     }
+
+        //     // ❌ ignore other flags completely
+        // }
+
         for (const item of data.items || []) {
-
-            if (item.snippet?.type !== "textMessageEvent") continue;
-
             const text = item.snippet?.displayMessage || "";
+
+            // ✅ correct fields
             const author = item.authorDetails?.channelId || "anonymous";
-            const displayName = item.authorDetails?.displayName || "Unknown";
+            const displayName = item.authorDetails?.displayName || "anonymous";
+
             const code = parseMessageForCountry(text);
 
-            if (state.selectedCountries.includes(code)) {
-                console.log("---- CHAT DEBUG ----");
-                console.log("Message:", item);
-                // console.log("Parsed Code:", code);
-                // console.log("In selectedCountries:", code ? state.selectedCountries.includes(code) : false);
-                // console.log("Already protected:", code ? protectedSet.has(code) : false);
-                console.log("--------------------");
-            }
+            // 🔍 debug
+            // console.log("---- CHAT DEBUG ----");
+            // console.log("Message:", text);
+            // console.log("User:", displayName);
+            // console.log("Code:", code);
+            // console.log("--------------------");
 
-            if (!code || !state.selectedCountries.includes(code)) continue;
+            if (code && state.selectedCountries.includes(code)) {
 
-            // 🟢 CASE 1: no flag protected yet
-            if (protectedSet.size === 0) {
+                if (!protectedSet.has(code)) {
+                    protectedSet.add(code);
+                    changed = true;
+                    console.log(`[Chat] Protected flag: ${code} (from: "${text}")`);
+                }
 
-                protectedSet.add(code);
+                if (!supporters[code]) supporters[code] = [];
 
-                supporters[code] = [{
-                    id: author,
-                    name: displayName,
-                    time: Date.now()
-                }];
-
-                console.log("FIRST PROTECT:", code, "by", displayName);
-                changed = true;
-                continue;
-            }
-
-            // 🔵 CASE 2: only support already protected flag
-            const currentFlag = [...protectedSet][0];
-
-            if (code === currentFlag) {
-
-                if (!supporters[currentFlag]) supporters[currentFlag] = [];
-
-                if (!supporters[currentFlag].some(s => s.id === author)) {
-                    supporters[currentFlag].push({
+                if (!supporters[code].some(s => s.id === author)) {
+                    supporters[code].push({
                         id: author,
                         name: displayName,
                         time: Date.now()
                     });
-
-                    console.log("SUPPORT:", displayName, "→", currentFlag);
                     changed = true;
                 }
             }
-
-            // ❌ ignore other flags completely
         }
 
         if (changed) {
